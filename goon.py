@@ -26,7 +26,7 @@ ytdl_format_options = {
     'logtostderr': False,
     'quiet': True,
     'no_warnings': True,
-    'default_search': 'auto',
+    'default_search': 'auto',  # Treat input as a search query if it's not a URL
     'source_address': '0.0.0.0',  # Bind to IPv4
     'extract_flat': True,  # Avoid extracting unnecessary metadata
     'prefer_ffmpeg': True,  # Prefer FFmpeg for audio extraction
@@ -60,9 +60,9 @@ class YTDLSource(discord.PCMVolumeTransformer):
 
 # Create a command group for GoonBot
 @bot.group(name="goon", invoke_without_command=True)
-async def goon(ctx, url: str = None):
-    if url is None:
-        await ctx.send("Please provide a YouTube link. Usage: `!goon <Link>`")
+async def goon(ctx, *, query: str = None):
+    if query is None:
+        await ctx.send("Please provide a YouTube link or search query. Usage: `!goon <Link or Query>`")
         return
 
     # Join the voice channel if not already connected
@@ -78,12 +78,12 @@ async def goon(ctx, url: str = None):
     # Play the music
     async with ctx.typing():
         try:
-            player = await YTDLSource.from_url(url, loop=bot.loop, stream=True)
+            player = await YTDLSource.from_url(query, loop=bot.loop, stream=True)
             voice_client.play(player, after=lambda e: print('Player error: %s' % e) if e else None)
             await ctx.send(f'Now playing: {player.title}')
         except Exception as e:
             print(f"Error: {e}")
-            await ctx.send("An error occurred while processing the URL. Please try again.")
+            await ctx.send("An error occurred while processing the query. Please try again.")
 
 # Command: !goon leave
 @goon.command(name="leave", help="Leaves the voice channel")
