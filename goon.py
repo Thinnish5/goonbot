@@ -1,6 +1,7 @@
 import discord
 from discord.ext import commands
 import yt_dlp as youtube_dl
+import asyncio
 
 # Function to read the bot token from secret.secret
 def read_token():
@@ -39,6 +40,9 @@ ffmpeg_options = {
 
 ytdl = youtube_dl.YoutubeDL(ytdl_format_options)
 
+# Queue system
+queue = []
+
 # YouTube DL extractor
 class YTDLSource(discord.PCMVolumeTransformer):
     def __init__(self, source, *, data, volume=0.5):
@@ -58,11 +62,21 @@ class YTDLSource(discord.PCMVolumeTransformer):
         filename = data['url'] if stream else ytdl.prepare_filename(data)
         return cls(discord.FFmpegPCMAudio(filename, **ffmpeg_options), data=data)
 
+# Function to play the next song in the queue
+async def play_next(ctx):
+    if len(queue) > 0:
+        query = queue.pop(0)
+        player = await YTDLSource.from_url(query, loop=bot.loop, stream=True)
+        ctx.voice_client.play(player, after=lambda e: asyncio.run_coroutine_threadsafe(play_next(ctx), bot.loop))
+        await ctx.send(f'Now playing: {player.title}')
+    else:
+        await ctx.send("The queue is empty. Add more songs with `!goon <query>`.")
+
 # Create a command group for GoonBot
 @bot.group(name="goon", invoke_without_command=True)
 async def goon(ctx, *, query: str = None):
     if query is None:
-        await ctx.send("Please provide a YouTube link or search query. Usage: `!goon <Link or Query>`")
+        await ctx.send("Please provide a search query. Usage: `!goon <query>`")
         return
 
     # Join the voice channel if not already connected
@@ -75,15 +89,32 @@ async def goon(ctx, *, query: str = None):
         channel = ctx.message.author.voice.channel
         voice_client = await channel.connect()
 
-    # Play the music
-    async with ctx.typing():
-        try:
-            player = await YTDLSource.from_url(query, loop=bot.loop, stream=True)
-            voice_client.play(player, after=lambda e: print('Player error: %s' % e) if e else None)
-            await ctx.send(f'Now playing: {player.title}')
-        except Exception as e:
-            print(f"Error: {e}")
-            await ctx.send("An error occurred while processing the query. Please try again.")
+    # Add the song to the queue
+    queue.append(query)
+    await ctx.send(f"Added to queue: {query}")
+
+    # If nothing is playing, start playing the song
+    if not voice_client.is_playing():
+        await play_next(ctx)
+
+# Command: !goon queue
+@goon.command(name="queue", help="Displays the current queue")
+async def show_queue(ctx):
+    if len(queue) == 0:
+        await ctx.send("The queue is empty.")
+    else:
+        queue_list = "\n".join([f"{i+1}. {song}" for i, song in enumerate(queue)])
+        await ctx.send(f"Current queue:\n{queue_list}")
+
+# Command: !goon skip
+@goon.command(name="skip", help="Skips the current song")
+async def skip(ctx):
+    voice_client = ctx.message.guild.voice_client
+    if voice_client.is_playing():
+        voice_client.stop()
+        await ctx.send("Skipped the current song.")
+    else:
+        await ctx.send("No audio is playing.")
 
 # Command: !goon leave
 @goon.command(name="leave", help="Leaves the voice channel")
@@ -91,6 +122,7 @@ async def leave(ctx):
     voice_client = ctx.message.guild.voice_client
     if voice_client.is_connected():
         await voice_client.disconnect()
+        queue.clear()  # Clear the queue when the bot leaves
     else:
         await ctx.send("The bot is not connected to a voice channel.")
 
@@ -118,16 +150,7 @@ async def stop(ctx):
     voice_client = ctx.message.guild.voice_client
     if voice_client.is_playing():
         voice_client.stop()
-    else:
-        await ctx.send("No audio is playing.")
-
-# Command: !goon skip
-@goon.command(name="skip", help="Skips the current song")
-async def skip(ctx):
-    voice_client = ctx.message.guild.voice_client
-    if voice_client.is_playing():
-        voice_client.stop()
-        await ctx.send("Skipped the current song.")
+        queue.clear()  # Clear the queue when the bot stops
     else:
         await ctx.send("No audio is playing.")
 
