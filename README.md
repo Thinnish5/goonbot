@@ -25,4 +25,4 @@ GoonBot is a Discord music bot that allows users to play music from YouTube dire
 ---
 
 ## License
-This project is licensed under the MIT License. See the LICENSE file for details.
+This project is licensed under the MIT License. See the [LICENSE](https://github.com/Thinnish5/goonbot/blob/main/LICENSE) file for details.
