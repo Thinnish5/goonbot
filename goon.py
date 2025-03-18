@@ -99,7 +99,7 @@ async def goon(ctx, *, query: str = None):
 
     # Add the song to the queue
     queue.append(query)
-    await ctx.send(f"Added to queue: {query}")
+    await ctx.send(f"Added to queue: `{query}`")
 
     # If nothing is playing, start playing the song
     if not voice_client.is_playing():
@@ -138,7 +138,7 @@ async def search(ctx, *, query: str):
         results = data["entries"]
         message = "**Search Results:**\n"
         for i, entry in enumerate(results):
-            message += f"{i + 1}. {entry['title']} - {entry['url']}\n"
+            message += f"{i + 1}. {entry['title']} - `{`entry['url']}`\n"
         message += "\nReact with the number (1️⃣-5️⃣) of the song you want to play."
 
         # Send the results and add reactions
@@ -184,7 +184,7 @@ async def show_queue(ctx):
     if len(queue) == 0:
         await ctx.send("The queue is empty.")
     else:
-        queue_list = "\n".join([f"{i + 1}. {song}" for i, song in enumerate(queue)])
+        queue_list = "\n".join([f"{i + 1}. `{song}`" for i, song in enumerate(queue)])
         await ctx.send(f"Current queue:\n{queue_list}")
 
 
