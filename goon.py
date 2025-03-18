@@ -138,7 +138,7 @@ async def search(ctx, *, query: str):
         results = data["entries"]
         message = "**Search Results:**\n"
         for i, entry in enumerate(results):
-            message += f"{i + 1}. {entry['title']} - `{`entry['url']}`\n"
+            message += f"{i + 1}. {entry['title']} - `{entry['url']}`\n"
         message += "\nReact with the number (1️⃣-5️⃣) of the song you want to play."
 
         # Send the results and add reactions
