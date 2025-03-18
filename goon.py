@@ -36,7 +36,10 @@ ytdl_format_options = {
 }
 
 # FFmpeg options with audio normalization
-ffmpeg_options = {"options": "-vn -b:a 192k -af loudnorm"}
+ffmpeg_options = {
+    "options": "-vn -b:a 192k -af loudnorm",
+    "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -nostdin",
+}
 
 ytdl = youtube_dl.YoutubeDL(ytdl_format_options)
 
