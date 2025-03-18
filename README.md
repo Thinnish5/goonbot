@@ -19,6 +19,7 @@ GoonBot is a Discord music bot that allows users to play music from YouTube dire
 ## Prerequisites
 
 - Python 3.8 or higher.
+- discord.py,yt-dlp and pynacl installed using pip.
 - FFmpeg installed on your system.
 - A Discord bot token from the [Discord Developer Portal](https://discord.com/developers/applications).
 
