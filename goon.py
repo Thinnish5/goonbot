@@ -256,5 +256,113 @@ async def help(ctx):
     )
 
 
+# Command: !goon playlist <name or link>
+@goon.command(name="playlist", help="Plays a playlist by name or link")
+async def playlist(ctx, *, query: str):
+    playlists = {
+        "all": "https://www.youtube.com/playlist?list=PLEMIbGkCIAqDaWDz1hwg04BwSbDXDlPCh",
+        "good": "https://www.youtube.com/playlist?list=PLEMIbGkCIAqDObuOVPqYQCyaibK8aYsI3",
+        "loop": "https://www.youtube.com/playlist?list=PLEMIbGkCIAqDBYM493VDLLfSlsgXeBURI",
+        "emo": "https://www.youtube.com/playlist?list=PLEMIbGkCIAqA0koaFqXvRVsed5lAs7BLF",
+        "dl": "https://www.youtube.com/playlist?list=PLEMIbGkCIAqDDeWgpUEK7gV5wtRwgckuI",
+        "diogo": "https://www.youtube.com/playlist?list=PL0SNMtspDuGR8cS7KNdAUYK196TAom2iJ",
+        "undead": "https://www.youtube.com/playlist?list=PLsiFbTU1f8FBAoJCLgU7Ss9g_EK_Dhn3r",
+        "rs2014": "https://www.youtube.com/playlist?list=PLEMIbGkCIAqB0U-5-lOFTKj8_drNJSayN",
+    }
+
+    if query in playlists:
+        url = playlists[query]
+    else:
+        url = query
+
+    # Join the voice channel if not already connected
+    if not ctx.message.author.voice:
+        await ctx.send(f"{ctx.message.author.name} is not connected to a voice channel")
+        return
+
+    voice_client = ctx.message.guild.voice_client
+    if not voice_client or not voice_client.is_connected():
+        channel = ctx.message.author.voice.channel
+        voice_client = await channel.connect()
+
+    # Fetch the playlist items
+    try:
+        data = await bot.loop.run_in_executor(
+            None, lambda: ytdl.extract_info(url, download=False)
+        )
+        if "entries" not in data or len(data["entries"]) == 0:
+            await ctx.send("No results found.")
+            return
+
+        # Add all items to the queue
+        for entry in data["entries"]:
+            queue.append(entry["url"])
+        await ctx.send(f"Added {len(data['entries'])} items to the queue.")
+
+        # If nothing is playing, start playing the first song
+        if not voice_client.is_playing():
+            await play_next(ctx)
+
+    except Exception as e:
+        print(f"Error: {e}")
+        await ctx.send(
+            "An error occurred while processing the playlist. Please try again."
+        )
+
+
+# Command: !goon playlist <name or link>
+@goon.command(name="playlist", help="Plays a playlist by name or link")
+async def playlist(ctx, *, query: str):
+    playlists = {
+        "all": "https://www.youtube.com/playlist?list=PLEMIbGkCIAqDaWDz1hwg04BwSbDXDlPCh",
+        "good": "https://www.youtube.com/playlist?list=PLEMIbGkCIAqDObuOVPqYQCyaibK8aYsI3",
+        "loop": "https://www.youtube.com/playlist?list=PLEMIbGkCIAqDBYM493VDLLfSlsgXeBURI",
+        "emo": "https://www.youtube.com/playlist?list=PLEMIbGkCIAqA0koaFqXvRVsed5lAs7BLF",
+        "dl": "https://www.youtube.com/playlist?list=PLEMIbGkCIAqDDeWgpUEK7gV5wtRwgckuI",
+        "diogo": "https://www.youtube.com/playlist?list=PL0SNMtspDuGR8cS7KNdAUYK196TAom2iJ",
+        "undead": "https://www.youtube.com/playlist?list=PLsiFbTU1f8FBAoJCLgU7Ss9g_EK_Dhn3r",
+        "rs2014": "https://www.youtube.com/playlist?list=PLEMIbGkCIAqB0U-5-lOFTKj8_drNJSayN",
+    }
+
+    if query in playlists:
+        url = playlists[query]
+    else:
+        url = query
+
+    # Join the voice channel if not already connected
+    if not ctx.message.author.voice:
+        await ctx.send(f"{ctx.message.author.name} is not connected to a voice channel")
+        return
+
+    voice_client = ctx.message.guild.voice_client
+    if not voice_client or not voice_client.is_connected():
+        channel = ctx.message.author.voice.channel
+        voice_client = await channel.connect()
+
+    # Fetch the playlist items
+    try:
+        data = await bot.loop.run_in_executor(
+            None, lambda: ytdl.extract_info(url, download=False)
+        )
+        if "entries" not in data or len(data["entries"]) == 0:
+            await ctx.send("No results found.")
+            return
+
+        # Add all items to the queue
+        for entry in data["entries"]:
+            queue.append(entry["url"])
+        await ctx.send(f"Added {len(data['entries'])} items to the queue.")
+
+        # If nothing is playing, start playing the first song
+        if not voice_client.is_playing():
+            await play_next(ctx)
+
+    except Exception as e:
+        print(f"Error: {e}")
+        await ctx.send(
+            "An error occurred while processing the playlist. Please try again."
+        )
+
+
 # Run the bot
 bot.run(read_token())
