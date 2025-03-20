@@ -19,9 +19,9 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 # Suppress noise about console usage from youtube_dl
 youtube_dl.utils.bug_reports_message = lambda: ""
 
-# YouTube DL options
+# Update these options to use more reliable formats
 ytdl_format_options = {
-    "format": "bestaudio/best",
+    "format": "bestaudio[ext=m4a]/bestaudio/best",  # Prefer more stable formats
     "outtmpl": "%(extractor)s-%(id)s-%(title)s.%(ext)s",
     "restrictfilenames": True,
     "noplaylist": True,
@@ -30,16 +30,20 @@ ytdl_format_options = {
     "logtostderr": False,
     "quiet": True,
     "no_warnings": True,
-    "default_search": "auto",  # Treat input as a search query if it's not a URL
-    "source_address": "0.0.0.0",  # Bind to IPv4
-    "extract_flat": True,  # Avoid extracting unnecessary metadata
-    "prefer_ffmpeg": True,  # Prefer FFmpeg for audio extraction
+    "default_search": "auto",
+    "source_address": "0.0.0.0",
+    "extract_flat": True,
+    "prefer_ffmpeg": True,
+    "cachedir": False,  # Prevent stale URL caching
+    "http_headers": {  # More realistic browser headers
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+    }
 }
 
-# FFmpeg options with audio normalization
+# Update FFmpeg options for better reliability
 ffmpeg_options = {
     "options": "-vn -b:a 192k -af loudnorm",
-    "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -nostdin",
+    "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 10 -nostdin",
 }
 
 ytdl = youtube_dl.YoutubeDL(ytdl_format_options)
@@ -53,6 +57,9 @@ player_messages = {}
 # Add a dictionary to track the channels where the player should be shown
 player_channels = {}
 
+# Add this missing variable for tracking current songs
+current_songs = {}
+
 # Create a UI class for the player controls
 class MusicPlayerView(discord.ui.View):
     def __init__(self):
@@ -62,17 +69,24 @@ class MusicPlayerView(discord.ui.View):
     async def play_pause_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         ctx = await bot.get_context(interaction.message)
         voice_client = interaction.guild.voice_client
-        
+        guild_id = interaction.guild.id
+
         if voice_client:
             if voice_client.is_paused():
                 voice_client.resume()
+                # Update pause state
+                if guild_id in current_songs:
+                    current_songs[guild_id]['playing'] = True
                 await interaction.response.send_message("Resumed playback", ephemeral=True)
             elif voice_client.is_playing():
                 voice_client.pause()
+                # Update pause state
+                if guild_id in current_songs:
+                    current_songs[guild_id]['playing'] = False
                 await interaction.response.send_message("Paused playback", ephemeral=True)
             else:
                 await interaction.response.send_message("Nothing is playing", ephemeral=True)
-        
+
         # Update the player
         await update_player(ctx)
     
@@ -130,11 +144,17 @@ class MusicPlayerView(discord.ui.View):
 
 
 # Function to create or update the player message
+# Update the update_player function to use stored song information
 async def update_player(ctx, song_title=None, is_playing=False):
     guild_id = ctx.guild.id
     
     # Track this channel as having a player
     player_channels[guild_id] = ctx.channel.id
+    
+    # Check if we have current song info (this takes priority)
+    if guild_id in current_songs and current_songs[guild_id]['playing']:
+        song_title = current_songs[guild_id]['title']
+        is_playing = True
     
     # Create embed for player
     embed = discord.Embed(
@@ -152,53 +172,81 @@ async def update_player(ctx, song_title=None, is_playing=False):
         embed.description = "Nothing is gooning right now"
         embed.set_footer(text="Use !goon <query> to add songs to the queue")
     
-    # Create view with buttons
+    # Rest of the function remains the same
     view = MusicPlayerView()
     
-    # If there's already a player message, edit it
     if guild_id in player_messages and player_messages[guild_id]:
         try:
             message = player_messages[guild_id]
             await message.edit(embed=embed, view=view)
             return
         except discord.NotFound:
-            # Message was deleted, create a new one
             pass
     
-    # Create a new player message
     message = await ctx.send(embed=embed, view=view)
     player_messages[guild_id] = message
 
-# YouTube DL extractor
+# Improved YouTube DL extractor with retry mechanism
 class YTDLSource(discord.PCMVolumeTransformer):
     def __init__(self, source, *, data, volume=0.5):
         super().__init__(source, volume)
         self.data = data
-        self.title = data.get("title")
-        self.url = data.get("url")
+        self.title = data.get("title", "Unknown title")
+        self.url = data.get("url", "")
 
     @classmethod
     async def from_url(cls, url, *, loop=None, stream=False):
         loop = loop or asyncio.get_event_loop()
-        data = await loop.run_in_executor(
-            None, lambda: ytdl.extract_info(url, download=not stream)
-        )
+        
+        # Try multiple times with different formats if needed
+        for attempt in range(3):
+            try:
+                # Wait between retries
+                if attempt > 0:
+                    await asyncio.sleep(1)
+                    print(f"Retry attempt {attempt} for {url}")
+                
+                # Create a fresh YTDL instance for each attempt
+                ytdl_instance = youtube_dl.YoutubeDL(ytdl_format_options)
+                
+                # Extract info
+                data = await loop.run_in_executor(
+                    None, lambda: ytdl_instance.extract_info(url, download=not stream)
+                )
 
-        if "entries" in data:
-            data = data["entries"][0]
+                if "entries" in data:
+                    # Get the first item if it's a playlist
+                    data = data["entries"][0]
+                
+                if not data:
+                    continue
 
-        filename = data["url"] if stream else ytdl.prepare_filename(data)
-        return cls(discord.FFmpegPCMAudio(filename, **ffmpeg_options), data=data)
+                filename = data["url"] if stream else ytdl_instance.prepare_filename(data)
+                return cls(discord.FFmpegPCMAudio(filename, **ffmpeg_options), data=data)
+                
+            except Exception as e:
+                print(f"Stream extraction attempt {attempt+1} failed: {e}")
+                if attempt == 2:  # Last attempt failed
+                    raise
+    
+        raise Exception("All extraction attempts failed")
 
 
 # Function to play the next song in the queue
+# Update the play_next function to store song information
 async def play_next(ctx):
     if len(queue) > 0:
-        query = queue[0]  # Don't remove from queue until successful
+        query = queue[0]
         try:
             player = await YTDLSource.from_url(query, loop=bot.loop, stream=True)
-            # Remove from queue after successful extraction
             queue.pop(0)
+            
+            # Store current song information
+            guild_id = ctx.guild.id
+            current_songs[guild_id] = {
+                'title': player.title,
+                'playing': True
+            }
             
             ctx.voice_client.play(
                 player,
@@ -208,18 +256,17 @@ async def play_next(ctx):
             )
             
             # Update the player with the current song
-            await update_player(ctx, player.title, True)
+            await update_player(ctx)
         except Exception as e:
             print(f"Error playing {query}: {e}")
-            # Remove the problematic song
             queue.pop(0)
-            # Notify but make message temporary
             await ctx.send(f"❌ Error playing song. Skipping to next...", delete_after=5)
-            # Try the next song
-            await asyncio.sleep(1)  # Small delay to prevent rapid failures
+            await asyncio.sleep(1)
             await play_next(ctx)
     else:
-        # Update the player with no song playing
+        # Clear current song when queue is empty
+        if ctx.guild.id in current_songs:
+            del current_songs[ctx.guild.id]
         await update_player(ctx)
 
 # Add this helper function to handle playback errors
