@@ -2,7 +2,8 @@ import discord
 from discord.ext import commands
 import yt_dlp as youtube_dl
 import asyncio
-
+from discord.ext import tasks
+import random
 
 # Function to read the bot token from secret.secret
 def read_token():
@@ -46,6 +47,127 @@ ytdl = youtube_dl.YoutubeDL(ytdl_format_options)
 # Queue system
 queue = []
 
+# Store player message references for each guild
+player_messages = {}
+
+# Add a dictionary to track the channels where the player should be shown
+player_channels = {}
+
+# Create a UI class for the player controls
+class MusicPlayerView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)  # Persistent view
+    
+    @discord.ui.button(label="⏯️ Play/Pause", style=discord.ButtonStyle.primary, custom_id="play_pause")
+    async def play_pause_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        ctx = await bot.get_context(interaction.message)
+        voice_client = interaction.guild.voice_client
+        
+        if voice_client:
+            if voice_client.is_paused():
+                voice_client.resume()
+                await interaction.response.send_message("Resumed playback", ephemeral=True)
+            elif voice_client.is_playing():
+                voice_client.pause()
+                await interaction.response.send_message("Paused playback", ephemeral=True)
+            else:
+                await interaction.response.send_message("Nothing is playing", ephemeral=True)
+        
+        # Update the player
+        await update_player(ctx)
+    
+    @discord.ui.button(label="⏭️ Skip", style=discord.ButtonStyle.primary, custom_id="skip")
+    async def skip_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        ctx = await bot.get_context(interaction.message)
+        voice_client = interaction.guild.voice_client
+        
+        if voice_client and voice_client.is_playing():
+            voice_client.stop()
+            await interaction.response.send_message("Skipped the current song", ephemeral=True)
+        else:
+            await interaction.response.send_message("Nothing to skip", ephemeral=True)
+    
+    @discord.ui.button(label="⏹️ Stop", style=discord.ButtonStyle.danger, custom_id="stop")
+    async def stop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        ctx = await bot.get_context(interaction.message)
+        voice_client = interaction.guild.voice_client
+        
+        if voice_client and (voice_client.is_playing() or voice_client.is_paused()):
+            queue.clear()
+            voice_client.stop()
+            await interaction.response.send_message("Stopped playback and cleared the queue", ephemeral=True)
+        else:
+            await interaction.response.send_message("Nothing is playing", ephemeral=True)
+        
+        # Update the player
+        await update_player(ctx)
+    
+    @discord.ui.button(label="📋 Show Queue", style=discord.ButtonStyle.secondary, custom_id="queue")
+    async def queue_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Defer the response immediately to prevent timeout
+        await interaction.response.defer(ephemeral=True)
+        
+        # Then process the queue display (which might take time)
+        queue_display = await get_queue_display()
+        
+        # Send followup instead of direct response
+        await interaction.followup.send(queue_display, ephemeral=True)
+
+    # Add this button to your MusicPlayerView class
+    @discord.ui.button(label="🔀 Shuffle", style=discord.ButtonStyle.secondary, custom_id="shuffle")
+    async def shuffle_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        ctx = await bot.get_context(interaction.message)
+
+        if len(queue) <= 1:
+            await interaction.response.send_message("Need at least 2 songs in the queue to shuffle.", ephemeral=True)
+            return
+
+        random.shuffle(queue)
+        await interaction.response.send_message("🔀 Queue has been shuffled!", ephemeral=True)
+
+        # Update the player to show the new queue
+        await update_player(ctx)
+
+
+# Function to create or update the player message
+async def update_player(ctx, song_title=None, is_playing=False):
+    guild_id = ctx.guild.id
+    
+    # Track this channel as having a player
+    player_channels[guild_id] = ctx.channel.id
+    
+    # Create embed for player
+    embed = discord.Embed(
+        title="🎵 GoonBot Music Player 🤤",
+        color=discord.Color.blurple()
+    )
+    
+    if song_title and is_playing:
+        embed.description = f"**Now Gooning:**\n{song_title}"
+        embed.set_footer(text="Use the buttons below to control playback")
+    elif len(queue) > 0:
+        embed.description = f"**Up Next:** {queue[0]}\n*{len(queue)} songs in queue*"
+        embed.set_footer(text="Nothing is currently gooning")
+    else:
+        embed.description = "Nothing is gooning right now"
+        embed.set_footer(text="Use !goon <query> to add songs to the queue")
+    
+    # Create view with buttons
+    view = MusicPlayerView()
+    
+    # If there's already a player message, edit it
+    if guild_id in player_messages and player_messages[guild_id]:
+        try:
+            message = player_messages[guild_id]
+            await message.edit(embed=embed, view=view)
+            return
+        except discord.NotFound:
+            # Message was deleted, create a new one
+            pass
+    
+    # Create a new player message
+    message = await ctx.send(embed=embed, view=view)
+    player_messages[guild_id] = message
 
 # YouTube DL extractor
 class YTDLSource(discord.PCMVolumeTransformer):
@@ -72,16 +194,39 @@ class YTDLSource(discord.PCMVolumeTransformer):
 # Function to play the next song in the queue
 async def play_next(ctx):
     if len(queue) > 0:
-        query = queue.pop(0)
-        player = await YTDLSource.from_url(query, loop=bot.loop, stream=True)
-        ctx.voice_client.play(
-            player,
-            after=lambda e: asyncio.run_coroutine_threadsafe(play_next(ctx), bot.loop),
-        )
-        await ctx.send(f"Now playing: {player.title}")
+        query = queue[0]  # Don't remove from queue until successful
+        try:
+            player = await YTDLSource.from_url(query, loop=bot.loop, stream=True)
+            # Remove from queue after successful extraction
+            queue.pop(0)
+            
+            ctx.voice_client.play(
+                player,
+                after=lambda e: asyncio.run_coroutine_threadsafe(
+                    handle_playback_error(e, ctx), bot.loop
+                ),
+            )
+            
+            # Update the player with the current song
+            await update_player(ctx, player.title, True)
+        except Exception as e:
+            print(f"Error playing {query}: {e}")
+            # Remove the problematic song
+            queue.pop(0)
+            # Notify but make message temporary
+            await ctx.send(f"❌ Error playing song. Skipping to next...", delete_after=5)
+            # Try the next song
+            await asyncio.sleep(1)  # Small delay to prevent rapid failures
+            await play_next(ctx)
     else:
-        await ctx.send("The queue is empty. Add more songs with `!goon <query>`.")
+        # Update the player with no song playing
+        await update_player(ctx)
 
+# Add this helper function to handle playback errors
+async def handle_playback_error(error, ctx):
+    if error:
+        print(f"Playback error: {error}")
+    await play_next(ctx)
 
 # Create a command group for GoonBot
 @bot.group(name="goon", invoke_without_command=True)
@@ -102,13 +247,26 @@ async def goon(ctx, *, query: str = None):
 
     # Add the song to the queue
     queue.append(query)
-    await ctx.send(f"Added to queue: `{query}`")
-
+    
+    # Send a temporary confirmation
+    temp_msg = await ctx.send(f"Added to queue: `{query}`")
+    
     # If nothing is playing, start playing the song
     if not voice_client.is_playing():
         await play_next(ctx)
+    else:
+        # Update the player to show the new queue
+        await update_player(ctx)
+    
+    # Delete the temporary message after a few seconds
+    await asyncio.sleep(5)
+    try:
+        await temp_msg.delete()
+    except:
+        pass
 
 
+# Command: !goon search <query>
 # Command: !goon search <query>
 @goon.command(
     name="search", help="Searches for a song and lets you select from the top 5 results"
@@ -149,31 +307,52 @@ async def search(ctx, *, query: str):
         for emoji in ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"]:
             await sent_message.add_reaction(emoji)
 
+        # Set up a task to delete the message after 30 seconds
+        async def delete_after_delay():
+            await asyncio.sleep(30)
+            try:
+                await sent_message.delete()
+            except discord.NotFound:
+                pass  # Message already deleted
+
+        # Start the deletion task
+        deletion_task = asyncio.create_task(delete_after_delay())
+
         # Wait for the user to react
         def check(reaction, user):
             return user == ctx.author and str(reaction.emoji) in [
-                "1️⃣",
-                "2️⃣",
-                "3️⃣",
-                "4️⃣",
-                "5️⃣",
+                "1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣",
             ]
 
         try:
             reaction, _ = await bot.wait_for("reaction_add", timeout=30.0, check=check)
+            # Cancel deletion task if user responded before the timeout
+            deletion_task.cancel()
+            
             selected_index = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"].index(str(reaction.emoji))
             selected_url = results[selected_index]["url"]
 
             # Add the selected song to the queue
             queue.append(selected_url)
-            await ctx.send(f"Added to queue: {results[selected_index]['title']}")
+            confirm_msg = await ctx.send(f"Added to queue: {results[selected_index]['title']}")
+            
+            # Delete the search results message immediately after selection
+            await sent_message.delete()
+            
+            # Delete confirmation message after 5 seconds
+            await asyncio.sleep(5)
+            await confirm_msg.delete()
 
             # If nothing is playing, start playing the song
             if not voice_client.is_playing():
                 await play_next(ctx)
 
         except asyncio.TimeoutError:
-            await ctx.send("You took too long to select a song. Please try again.")
+            # User didn't respond in time - message will be deleted by the deletion_task
+            timeout_msg = await ctx.send("You took too long to select a song. Please try again.")
+            await asyncio.sleep(5)
+            await timeout_msg.delete()
+            
     except Exception as e:
         print(f"Error: {e}")
         await ctx.send(
@@ -181,14 +360,47 @@ async def search(ctx, *, query: str):
         )
 
 
+# Helper function to generate queue display
+async def get_queue_display():
+    if len(queue) == 0:
+        return "The queue is empty."
+    
+    # Get up to 10 items from the queue
+    display_queue = queue[:10]
+    
+    # Try to extract titles where possible
+    queue_items = []
+    for i, item in enumerate(display_queue):
+        # Try to get a title from the URL
+        try:
+            # Only extract information if this is a direct URL
+            if "youtube.com" in item or "youtu.be" in item:
+                data = await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: ytdl.extract_info(item, download=False, process=False)
+                )
+                title = data.get('title', item)
+            else:
+                title = item
+            queue_items.append(f"{i + 1}. `{title}`")
+        except:
+            # If we can't extract a title, just use the query string
+            queue_items.append(f"{i + 1}. `{item}`")
+    
+    # Show how many more songs are in queue if there are more than 10
+    remaining = len(queue) - 10
+    queue_text = "\n".join(queue_items)
+    
+    if remaining > 0:
+        queue_text += f"\n\n*...and {remaining} more song{'s' if remaining != 1 else ''}*"
+        
+    return f"**Current queue:**\n{queue_text}"
+
 # Command: !goon queue
 @goon.command(name="queue", help="Displays the current queue")
 async def show_queue(ctx):
-    if len(queue) == 0:
-        await ctx.send("The queue is empty.")
-    else:
-        queue_list = "\n".join([f"{i + 1}. `{song}`" for i, song in enumerate(queue)])
-        await ctx.send(f"Current queue:\n{queue_list}")
+    queue_display = await get_queue_display()
+    # Using ephemeral=True to make it visible only to the user
+    await ctx.send(queue_display, ephemeral=True)
 
 
 # Command: !goon skip
@@ -206,11 +418,24 @@ async def skip(ctx):
 @goon.command(name="leave", help="Leaves the voice channel")
 async def leave(ctx):
     voice_client = ctx.message.guild.voice_client
-    if voice_client.is_connected():
+    if voice_client and voice_client.is_connected:
+        # Clear the player message before leaving
+        guild_id = ctx.guild.id
+        if guild_id in player_messages:
+            try:
+                old_message = player_messages[guild_id]
+                await old_message.delete()
+                player_messages.pop(guild_id, None)  # Remove from dictionary
+                player_channels.pop(guild_id, None)  # Remove channel tracking
+            except (discord.NotFound, AttributeError):
+                pass
+        
+        # Now disconnect and clear queue
         await voice_client.disconnect()
         queue.clear()  # Clear the queue when the bot leaves
+        await ctx.send("Left the voice channel and cleared the queue.", delete_after=5)
     else:
-        await ctx.send("The bot is not connected to a voice channel.")
+        await ctx.send("The bot is not connected to a voice channel.", delete_after=5)
 
 
 # Command: !goon pause
@@ -257,8 +482,22 @@ async def help(ctx):
         "7. `!goon resume`: Resumes the paused song.\n"
         "8. `!goon stop`: Stops the current song.\n"
         "9. `!goon playlist <name or link>`: Plays a playlist by name or link.\n"
+        "10.`!goon shuffle`: Shuffles the songs in the queue."
     )
 
+
+# Command: !goon shuffle
+@goon.command(name="shuffle", help="Shuffles the songs in the queue")
+async def shuffle(ctx):
+    if len(queue) <= 1:
+        await ctx.send("Need at least 2 songs in the queue to shuffle.")
+        return
+        
+    random.shuffle(queue)
+    await ctx.send("🔀 Queue has been shuffled!")
+    
+    # Update the player to show the new queue order
+    await update_player(ctx)
 
 # Command: !goon playlist <name or link>
 @goon.command(name="playlist", help="Plays a playlist by name or link")
@@ -289,30 +528,150 @@ async def playlist(ctx, *, query: str):
         channel = ctx.message.author.voice.channel
         voice_client = await channel.connect()
 
+    # Let the user know we're processing the playlist
+    processing_msg = await ctx.send("⏳ Processing playlist... This may take a moment.")
+    
+    # Create a custom ytdl instance with playlist-specific options
+    playlist_ytdl_options = ytdl_format_options.copy()
+    playlist_ytdl_options.update({
+        "extract_flat": "in_playlist",  # Better playlist extraction
+        "ignoreerrors": True,  # Skip failed entries
+        "playlistend": 50,  # Limit to 50 items to avoid overloading
+        "noplaylist": False,  # Allow playlist processing
+    })
+    playlist_ytdl = youtube_dl.YoutubeDL(playlist_ytdl_options)
+    
     # Fetch the playlist items
     try:
+        # First, get playlist info without downloading
         data = await bot.loop.run_in_executor(
-            None, lambda: ytdl.extract_info(url, download=False)
+            None, lambda: playlist_ytdl.extract_info(url, download=False, process=False)
         )
-        if "entries" not in data or len(data["entries"]) == 0:
-            await ctx.send("No results found.")
+        
+        if "entries" not in data:
+            await processing_msg.edit(content="No playlist found or invalid URL.")
             return
-
-        # Add all items to the queue
+        
+        # Process each entry individually to avoid batch errors
+        successful_entries = 0
+        entry_count = 0
+        
+        # Process the entries as they come in from the generator
         for entry in data["entries"]:
-            queue.append(entry["url"])
-        await ctx.send(f"Added {len(data['entries'])} items to the queue.")
-
-        # If nothing is playing, start playing the first song
-        if not voice_client.is_playing():
-            await play_next(ctx)
+            entry_count += 1
+            if entry is None:
+                continue
+                
+            try:
+                # For each entry, get a proper URL
+                if 'url' in entry and entry['url']:
+                    video_url = entry['url']
+                elif 'id' in entry and entry['id']:
+                    video_url = f"https://www.youtube.com/watch?v={entry['id']}"
+                else:
+                    continue
+                    
+                # Add to queue
+                queue.append(video_url)
+                successful_entries += 1
+                
+                # Update processing message periodically
+                if successful_entries % 5 == 0:
+                    await processing_msg.edit(content=f"⏳ Added {successful_entries} songs so far...")
+                    
+                    
+            except Exception as e:
+                print(f"Error processing playlist item: {e}")
+                continue
+        
+        # Check if we processed any entries
+        if entry_count == 0:
+            await processing_msg.edit(content="The playlist appears to be empty.")
+            return
+            
+        # Update final message
+        if successful_entries > 0:
+            await processing_msg.edit(content=f"✅ Added {successful_entries} songs to the queue.", delete_after=5)
+            
+            # If nothing is playing, start playing the first song
+            if not voice_client.is_playing():
+                await play_next(ctx)
+            else:
+                # Update the player to show the new queue
+                await update_player(ctx)
+        else:
+            await processing_msg.edit(content="❌ Failed to add any songs from the playlist.")
 
     except Exception as e:
-        print(f"Error: {e}")
-        await ctx.send(
-            "An error occurred while processing the playlist. Please try again."
-        )
+        print(f"Playlist error: {e}")
+        await processing_msg.edit(content=f"❌ Error processing playlist: {str(e)[:100]}...")
 
+# Add this before bot.run(read_token())
+@bot.event
+async def on_ready():
+    print(f"Bot is ready! Logged in as {bot.user}")
+    # Register the persistent view
+    bot.add_view(MusicPlayerView())
+
+# Add this event to listen for new messages
+@bot.event
+async def on_message(message):
+    # Don't process commands here, just watch for new messages
+    if message.author == bot.user:
+        return
+    
+    # Process commands first
+    await bot.process_commands(message)
+    
+    # Check if this channel has a player
+    guild_id = message.guild.id if message.guild else None
+    if guild_id and guild_id in player_channels and player_channels[guild_id] == message.channel.id:
+        # Get context for sending messages
+        ctx = await bot.get_context(message)
+        
+        # Only update if the player exists
+        if guild_id in player_messages:
+            # Delete the old player message
+            try:
+                old_message = player_messages[guild_id]
+                await old_message.delete()
+            except (discord.NotFound, AttributeError):
+                # Message might already be deleted
+                pass
+            
+            # Create a new player message
+            player_messages[guild_id] = None
+            await update_player(ctx)
+
+# Add this before bot.run(read_token())
+@bot.event
+async def on_voice_state_update(member, before, after):
+    # Only care about the bot's voice state
+    if member.id != bot.user.id:
+        return
+    
+    # Check if the bot has left a voice channel (disconnected or kicked)
+    if before.channel is not None and after.channel is None:
+        guild_id = before.channel.guild.id
+        
+        # Clean up the player message
+        if guild_id in player_messages:
+            try:
+                # Get the channel where the player is
+                channel_id = player_channels.get(guild_id)
+                if channel_id:
+                    channel = bot.get_channel(channel_id)
+                    if channel:
+                        # Get the message and delete it
+                        old_message = player_messages[guild_id]
+                        await old_message.delete()
+                
+                # Remove from dictionaries
+                player_messages.pop(guild_id, None)
+                player_channels.pop(guild_id, None)
+            except (discord.NotFound, AttributeError, discord.HTTPException):
+                # Handle any errors during deletion
+                pass
 
 # Run the bot
 bot.run(read_token())
