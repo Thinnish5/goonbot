@@ -392,7 +392,7 @@ async def goon(ctx, *, query: str = None):
         await temp_msg.delete()
     except:
         pass
-    
+
 
 # Command: !goon search <query>
 @goon.command(
@@ -643,7 +643,19 @@ async def playlist(ctx, *, query: str):
     if query in playlists:
         url = playlists[query]
     else:
-        url = query
+        # Extract playlist ID and convert to proper playlist URL
+        import re
+        
+        # Check if this is a YouTube URL with a video and playlist ID
+        playlist_id_match = re.search(r'list=([^&]+)', query)
+        if playlist_id_match and ('youtube.com/watch' in query or 'youtu.be' in query):
+            # Extract the playlist ID
+            playlist_id = playlist_id_match.group(1)
+            # Convert to the proper format YouTube API prefers
+            url = f"https://www.youtube.com/playlist?list={playlist_id}"
+            print(f"Converted URL from {query} to {url}")
+        else:
+            url = query
 
     # Join the voice channel if not already connected
     if not ctx.message.author.voice:
