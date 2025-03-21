@@ -784,44 +784,44 @@ async def on_voice_state_update(member, before, after):
             
             # If no humans left, disconnect the bot
             # Improved disconnect handler in on_voice_state_update
-    if len(human_members) == 0:
-        print(f"All users left voice channel in {before.channel.guild.name} - disconnecting")
-
-        guild_id = before.channel.guild.id
-
-        # First, properly store message reference before cleanup
-        old_message = None
-        channel = None
-        if guild_id in player_messages and player_messages[guild_id]:
-            old_message = player_messages[guild_id]
-
-            # Get the text channel reference
-            if guild_id in player_channels:
-                channel_id = player_channels.get(guild_id)
-                channel = bot.get_channel(channel_id)
-
-        # Disconnect from voice first (stops any playback)
-        await voice_client.disconnect()
-
-        # Clear the queue and current song info
-        if guild_id in current_songs:
-            del current_songs[guild_id]
-
-        # Now delete the player message AFTER disconnecting
-        if old_message and channel:
-            try:
-                await old_message.delete()
-                print(f"Successfully deleted player message in {channel.name}")
-            except Exception as e:
-                print(f"Error deleting player message: {e}")
-
-        # Clean up references AFTER deletion attempt
-        player_messages.pop(guild_id, None)
-        player_channels.pop(guild_id, None)
-
-        # Send notification if we have a valid channel
-        if channel:
-            await channel.send("Everyone left the voice channel, so I disconnected.", delete_after=10)
+            if len(human_members) == 0:
+                print(f"All users left voice channel in {before.channel.guild.name} - disconnecting")
+        
+                guild_id = before.channel.guild.id
+        
+                # First, properly store message reference before cleanup
+                old_message = None
+                channel = None
+                if guild_id in player_messages and player_messages[guild_id]:
+                    old_message = player_messages[guild_id]
+        
+                    # Get the text channel reference
+                    if guild_id in player_channels:
+                        channel_id = player_channels.get(guild_id)
+                        channel = bot.get_channel(channel_id)
+        
+                # Disconnect from voice first (stops any playback)
+                await voice_client.disconnect()
+        
+                # Clear the queue and current song info
+                if guild_id in current_songs:
+                    del current_songs[guild_id]
+        
+                # Now delete the player message AFTER disconnecting
+                if old_message and channel:
+                    try:
+                        await old_message.delete()
+                        print(f"Successfully deleted player message in {channel.name}")
+                    except Exception as e:
+                        print(f"Error deleting player message: {e}")
+        
+                # Clean up references AFTER deletion attempt
+                player_messages.pop(guild_id, None)
+                player_channels.pop(guild_id, None)
+        
+                # Send notification if we have a valid channel
+                if channel:
+                    await channel.send("Everyone left the voice channel, so I disconnected.", delete_after=10)
 
 
 # Add these helper functions to format time and create progress bar
