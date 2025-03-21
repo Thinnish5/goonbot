@@ -4,6 +4,7 @@ import yt_dlp as youtube_dl
 import asyncio
 from discord.ext import tasks
 import random
+import time
 
 # Function to read the bot token from secret.secret
 def read_token():
@@ -74,18 +75,24 @@ class MusicPlayerView(discord.ui.View):
         if voice_client:
             if voice_client.is_paused():
                 voice_client.resume()
-                # Update pause state
+                # Update pause tracking for progress bar
                 if guild_id in current_songs:
-                    current_songs[guild_id]['playing'] = True
-                await interaction.response.send_message("Resumed playback", ephemeral=True)
+                    info = current_songs[guild_id]
+                    if info.get('paused_at'):
+                        # Add the pause duration to total pause time
+                        info['total_pause_time'] += time.time() - info['paused_at']
+                        info['paused_at'] = None
+                    info['playing'] = True
+                await interaction.response.send_message("Resumed playback", ephemeral=True, delete_after=5)
             elif voice_client.is_playing():
                 voice_client.pause()
-                # Update pause state
+                # Track when we paused
                 if guild_id in current_songs:
                     current_songs[guild_id]['playing'] = False
-                await interaction.response.send_message("Paused playback", ephemeral=True)
+                    current_songs[guild_id]['paused_at'] = time.time()
+                await interaction.response.send_message("Paused playback", ephemeral=True, delete_after=5)
             else:
-                await interaction.response.send_message("Nothing is playing", ephemeral=True)
+                await interaction.response.send_message("Nothing is playing", ephemeral=True ,delete_after=5)
 
         # Update the player
         await update_player(ctx)
@@ -97,9 +104,9 @@ class MusicPlayerView(discord.ui.View):
         
         if voice_client and voice_client.is_playing():
             voice_client.stop()
-            await interaction.response.send_message("Skipped the current song", ephemeral=True)
+            await interaction.response.send_message("Skipped the current song", ephemeral=True ,delete_after=5)
         else:
-            await interaction.response.send_message("Nothing to skip", ephemeral=True)
+            await interaction.response.send_message("Nothing to skip", ephemeral=True, delete_after=5)
     
     @discord.ui.button(label="⏹️ Stop", style=discord.ButtonStyle.danger, custom_id="stop")
     async def stop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -109,9 +116,9 @@ class MusicPlayerView(discord.ui.View):
         if voice_client and (voice_client.is_playing() or voice_client.is_paused()):
             queue.clear()
             voice_client.stop()
-            await interaction.response.send_message("Stopped playback and cleared the queue", ephemeral=True)
+            await interaction.response.send_message("Stopped playback and cleared the queue", ephemeral=True, delete_after=5)
         else:
-            await interaction.response.send_message("Nothing is playing", ephemeral=True)
+            await interaction.response.send_message("Nothing is playing", ephemeral=True, delete_after=5)
         
         # Update the player
         await update_player(ctx)
@@ -152,9 +159,29 @@ async def update_player(ctx, song_title=None, is_playing=False):
     player_channels[guild_id] = ctx.channel.id
     
     # Check if we have current song info (this takes priority)
-    if guild_id in current_songs and current_songs[guild_id]['playing']:
-        song_title = current_songs[guild_id]['title']
-        is_playing = True
+    if guild_id in current_songs:
+        info = current_songs[guild_id]
+        song_title = info.get('title', "Unknown")
+        is_playing = info.get('playing', False)
+        
+        # Calculate current progress
+        duration = info.get('duration', 0)
+        if duration > 0:
+            start_time = info.get('start_time', time.time())
+            total_pause_time = info.get('total_pause_time', 0)
+            
+            # If currently paused, don't include time since pause
+            if info.get('paused_at'):
+                elapsed = info['paused_at'] - start_time - total_pause_time
+            else:
+                elapsed = time.time() - start_time - total_pause_time
+            
+            # Create progress display
+            progress_bar = create_progress_bar(elapsed, duration)
+            time_display = f"{format_time(elapsed)}/{format_time(duration)}"
+        else:
+            progress_bar = None
+            time_display = None
     
     # Create embed for player
     embed = discord.Embed(
@@ -163,7 +190,10 @@ async def update_player(ctx, song_title=None, is_playing=False):
     )
     
     if song_title and is_playing:
-        embed.description = f"**Now Gooning:**\n{song_title}"
+        if progress_bar and time_display:
+            embed.description = f"**Now Gooning:**\n{song_title}\n\n{progress_bar} {time_display}"
+        else:
+            embed.description = f"**Now Gooning:**\n{song_title}"
         embed.set_footer(text="Use the buttons below to control playback")
     elif len(queue) > 0:
         embed.description = f"**Up Next:** {queue[0]}\n*{len(queue)} songs in queue*"
@@ -241,11 +271,16 @@ async def play_next(ctx):
             player = await YTDLSource.from_url(query, loop=bot.loop, stream=True)
             queue.pop(0)
             
-            # Store current song information
+            # Store enhanced song information
             guild_id = ctx.guild.id
+            duration = player.data.get('duration', 0)
             current_songs[guild_id] = {
                 'title': player.title,
-                'playing': True
+                'playing': True,
+                'start_time': time.time(),
+                'duration': duration,
+                'paused_at': None,
+                'total_pause_time': 0
             }
             
             ctx.voice_client.play(
@@ -413,7 +448,7 @@ async def get_queue_display():
         return "The queue is empty."
     
     # Get up to 10 items from the queue
-    display_queue = queue[:10]
+    display_queue = queue[:5]
     
     # Try to extract titles where possible
     queue_items = []
@@ -434,7 +469,7 @@ async def get_queue_display():
             queue_items.append(f"{i + 1}. `{item}`")
     
     # Show how many more songs are in queue if there are more than 10
-    remaining = len(queue) - 10
+    remaining = len(queue) - 5
     queue_text = "\n".join(queue_items)
     
     if remaining > 0:
@@ -659,6 +694,8 @@ async def on_ready():
     print(f"Bot is ready! Logged in as {bot.user}")
     # Register the persistent view
     bot.add_view(MusicPlayerView())
+    # Start the progress update task
+    update_progress_bars.start()
 
 # Add this event to listen for new messages
 @bot.event
@@ -684,8 +721,7 @@ async def on_message(message):
                 await old_message.delete()
             except (discord.NotFound, AttributeError):
                 # Message might already be deleted
-                pass
-            
+                pass            
             # Create a new player message
             player_messages[guild_id] = None
             await update_player(ctx)
@@ -719,6 +755,48 @@ async def on_voice_state_update(member, before, after):
             except (discord.NotFound, AttributeError, discord.HTTPException):
                 # Handle any errors during deletion
                 pass
+
+# Add these helper functions to format time and create progress bar
+def format_time(seconds):
+    """Convert seconds to MM:SS format"""
+    if seconds is None:
+        return "0:00"
+    minutes, seconds = divmod(int(seconds), 60)
+    return f"{minutes}:{seconds:02d}"
+
+def create_progress_bar(current, total, length=20):
+    if total <= 0:
+        return "┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈"
+    
+    current = min(current, total)
+    percentage = current / total
+    position = int(percentage * length)
+    
+    # More elegant look
+    filled = "━" * position
+    empty = "┈" * (length - position - 1)
+    
+    # Create bar with playhead
+    bar = filled + "⚪" + empty
+    
+    return bar
+
+# Add a task to update the player periodically
+@tasks.loop(seconds=2)
+async def update_progress_bars():
+    """Update all active players to show current progress"""
+    for guild_id, info in list(current_songs.items()):
+        if info.get('playing', False) and info.get('duration', 0) > 0:
+            # Only update if we have an active player
+            if guild_id in player_messages and guild_id in player_channels:
+                try:
+                    channel_id = player_channels[guild_id]
+                    channel = bot.get_channel(channel_id)
+                    if channel and player_messages[guild_id]:
+                        ctx = await bot.get_context(player_messages[guild_id])
+                        await update_player(ctx)
+                except Exception as e:
+                    print(f"Error updating progress bar: {e}")
 
 # Run the bot
 bot.run(read_token())
