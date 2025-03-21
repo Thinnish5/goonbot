@@ -152,17 +152,28 @@ class MusicPlayerView(discord.ui.View):
 
 # Function to create or update the player message
 # Update the update_player function to use stored song information
+# Update the update_player function to show thumbnails
 async def update_player(ctx, song_title=None, is_playing=False):
     guild_id = ctx.guild.id
     
     # Track this channel as having a player
     player_channels[guild_id] = ctx.channel.id
     
+    # Create embed for player
+    embed = discord.Embed(
+        title="🎵 GoonBot Music Player 🤤",
+        color=discord.Color.blurple()
+    )
+    
     # Check if we have current song info (this takes priority)
     if guild_id in current_songs:
         info = current_songs[guild_id]
         song_title = info.get('title', "Unknown")
         is_playing = info.get('playing', False)
+        
+        # Add thumbnail if available
+        if 'thumbnail' in info and info['thumbnail']:
+            embed.set_thumbnail(url=info['thumbnail'])
         
         # Calculate current progress
         duration = info.get('duration', 0)
@@ -182,12 +193,6 @@ async def update_player(ctx, song_title=None, is_playing=False):
         else:
             progress_bar = None
             time_display = None
-    
-    # Create embed for player
-    embed = discord.Embed(
-        title="🎵 GoonBot Music Player 🤤",
-        color=discord.Color.blurple()
-    )
     
     if song_title and is_playing:
         if progress_bar and time_display:
@@ -263,13 +268,23 @@ class YTDLSource(discord.PCMVolumeTransformer):
 
 
 # Function to play the next song in the queue
-# Update the play_next function to store song information
 async def play_next(ctx):
     if len(queue) > 0:
         query = queue[0]
         try:
             player = await YTDLSource.from_url(query, loop=bot.loop, stream=True)
             queue.pop(0)
+            
+            # Extract thumbnail URL from the data
+            thumbnail_url = None
+            if 'thumbnail' in player.data:
+                thumbnail_url = player.data['thumbnail']
+            # If no direct thumbnail, check thumbnails list
+            elif 'thumbnails' in player.data and len(player.data['thumbnails']) > 0:
+                # Try to get the highest quality thumbnail
+                thumbnails = player.data['thumbnails']
+                # Usually the last one is highest quality
+                thumbnail_url = thumbnails[-1]['url'] if thumbnails else None
             
             # Store enhanced song information
             guild_id = ctx.guild.id
@@ -280,7 +295,8 @@ async def play_next(ctx):
                 'start_time': time.time(),
                 'duration': duration,
                 'paused_at': None,
-                'total_pause_time': 0
+                'total_pause_time': 0,
+                'thumbnail': thumbnail_url  # Store the thumbnail URL
             }
             
             ctx.voice_client.play(
