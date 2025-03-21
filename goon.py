@@ -335,19 +335,49 @@ async def goon(ctx, *, query: str = None):
 
     # Join the voice channel if not already connected
     if not ctx.message.author.voice:
-        await ctx.send(f"{ctx.message.author.name} is not connected to a voice channel", ephemeral=True ,delete_after=5)
+        await ctx.send(f"{ctx.message.author.name} is not connected to a voice channel", ephemeral=True, delete_after=5)
         return
 
     voice_client = ctx.message.guild.voice_client
     if not voice_client or not voice_client.is_connected():
         channel = ctx.message.author.voice.channel
         voice_client = await channel.connect()
-
-    # Add the song to the queue
-    queue.append(query)
     
-    # Send a temporary confirmation
-    temp_msg = await ctx.send(f"Added to queue: `{query}`")
+    # Check if the query is a URL or a search term
+    is_url = "youtube.com" in query or "youtu.be" in query
+    
+    if is_url:
+        # Existing behavior for URLs
+        actual_query = query
+        temp_msg = await ctx.send(f"Added to queue: `{query}`")
+    else:
+        # New behavior for search terms: auto-select first result
+        temp_msg = await ctx.send(f"🔍 Searching for: `{query}`...")
+        
+        try:
+            # Use ytsearch1: to get just the top result
+            data = await bot.loop.run_in_executor(
+                None, lambda: ytdl.extract_info(f"ytsearch1:{query}", download=False)
+            )
+            
+            if "entries" not in data or len(data["entries"]) == 0:
+                await temp_msg.edit(content="❌ No results found.")
+                return
+                
+            # Get the first (and only) result
+            result = data["entries"][0]
+            actual_query = result["url"]
+            
+            # Update the message with the found song
+            await temp_msg.edit(content=f"✅ Added to queue: `{result['title']}`")
+            
+        except Exception as e:
+            print(f"Search error: {e}")
+            await temp_msg.edit(content=f"❌ Error searching YouTube: {str(e)[:100]}...")
+            return
+    
+    # Add the song to the queue (now using actual_query which is always a URL)
+    queue.append(actual_query)
     
     # If nothing is playing, start playing the song
     if not voice_client.is_playing():
@@ -362,9 +392,8 @@ async def goon(ctx, *, query: str = None):
         await temp_msg.delete()
     except:
         pass
+    
 
-
-# Command: !goon search <query>
 # Command: !goon search <query>
 @goon.command(
     name="search", help="Searches for a song and lets you select from the top 5 results"
@@ -786,27 +815,27 @@ async def on_voice_state_update(member, before, after):
             # Improved disconnect handler in on_voice_state_update
             if len(human_members) == 0:
                 print(f"All users left voice channel in {before.channel.guild.name} - disconnecting")
-        
+
                 guild_id = before.channel.guild.id
-        
+
                 # First, properly store message reference before cleanup
                 old_message = None
                 channel = None
                 if guild_id in player_messages and player_messages[guild_id]:
                     old_message = player_messages[guild_id]
-        
+
                     # Get the text channel reference
                     if guild_id in player_channels:
                         channel_id = player_channels.get(guild_id)
                         channel = bot.get_channel(channel_id)
-        
+
                 # Disconnect from voice first (stops any playback)
                 await voice_client.disconnect()
-        
+
                 # Clear the queue and current song info
                 if guild_id in current_songs:
                     del current_songs[guild_id]
-        
+
                 # Now delete the player message AFTER disconnecting
                 if old_message and channel:
                     try:
@@ -814,11 +843,11 @@ async def on_voice_state_update(member, before, after):
                         print(f"Successfully deleted player message in {channel.name}")
                     except Exception as e:
                         print(f"Error deleting player message: {e}")
-        
+
                 # Clean up references AFTER deletion attempt
                 player_messages.pop(guild_id, None)
                 player_channels.pop(guild_id, None)
-        
+
                 # Send notification if we have a valid channel
                 if channel:
                     await channel.send("Everyone left the voice channel, so I disconnected.", delete_after=10)
