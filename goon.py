@@ -210,14 +210,23 @@ async def update_player(ctx, song_title=None, is_playing=False):
     # Rest of the function remains the same
     view = MusicPlayerView()
     
+    # Try to update existing message first
     if guild_id in player_messages and player_messages[guild_id]:
         try:
             message = player_messages[guild_id]
             await message.edit(embed=embed, view=view)
+            
+            # Clean up any duplicate player messages
+            await cleanup_previous_player_messages(ctx)
             return
         except discord.NotFound:
+            # Message was deleted, create a new one
             pass
     
+    # Clean up any old player messages before creating a new one
+    await cleanup_previous_player_messages(ctx)
+    
+    # Create new message
     message = await ctx.send(embed=embed, view=view)
     player_messages[guild_id] = message
 
@@ -266,6 +275,34 @@ class YTDLSource(discord.PCMVolumeTransformer):
     
         raise Exception("All extraction attempts failed")
 
+# Add this helper function to clean up previous player messages
+async def cleanup_previous_player_messages(ctx):
+    """Find and delete old player messages from the bot in the current channel"""
+    try:
+        # Get recent messages in the channel
+        channel = ctx.channel
+        messages = [msg async for msg in channel.history(limit=15)]
+        
+        # Filter for bot's messages that look like player messages
+        player_messages_list = [
+            msg for msg in messages 
+            if msg.author.id == bot.user.id 
+            and msg.embeds 
+            and any("GoonBot Music Player" in embed.title for embed in msg.embeds if embed.title)
+        ]
+        
+        # If there's more than one, delete all except the most recent
+        if len(player_messages_list) > 1:
+            print(f"Found {len(player_messages_list)} player messages in {channel.name}, cleaning up...")
+            # Skip the first one (most recent) if we have a current player reference
+            for msg in player_messages_list[1:]:
+                try:
+                    await msg.delete()
+                    print(f"Deleted old player message in {channel.name}")
+                except Exception as e:
+                    print(f"Error deleting old message: {e}")
+    except Exception as e:
+        print(f"Error in cleanup: {e}")
 
 # Function to play the next song in the queue
 async def play_next(ctx):
@@ -783,7 +820,6 @@ async def on_message(message):
             player_messages[guild_id] = None
             await update_player(ctx)
 
-# Add this before bot.run(read_token())
 @bot.event
 async def on_voice_state_update(member, before, after):
     # First handle the bot's own disconnects
@@ -809,6 +845,11 @@ async def on_voice_state_update(member, before, after):
                 except (discord.NotFound, AttributeError, discord.HTTPException):
                     # Handle any errors during deletion
                     pass
+        
+        # handling for voice connection errors
+        if hasattr(after, 'channel') and after.channel is not None:
+            if hasattr(after, 'self_deaf') and after.self_deaf is True:
+                print(f"Bot reconnected to voice in {after.channel.guild.name}")
         return
     
     # Now handle when a user disconnects from a voice channel
